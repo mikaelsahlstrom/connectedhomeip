@@ -2384,6 +2384,48 @@ TEST_F(TestCASESession, Sigma1BadDestinationIdTest)
 
     SessionManager & sessionManager = GetSecureSessionManager();
 
+    constexpr size_t bufferSize     = 600;
+    System::PacketBufferHandle data = chip::System::PacketBufferHandle::New(bufferSize);
+    ASSERT_FALSE(data.IsNull());
+
+    MutableByteSpan buf(data->Start(), data->AvailableDataLength());
+    // This uses a bogus destination id that is not going to match anything in practice.
+    EXPECT_EQ(EncodeSigma1Helper<Sigma1Params>(buf), CHIP_NO_ERROR);
+    data->SetDataLength(static_cast<uint16_t>(buf.size()));
+
+    Optional<SessionHandle> session = sessionManager.CreateUnauthenticatedSession(GetAliceAddress(), GetDefaultMRPConfig());
+    EXPECT_TRUE(session.HasValue());
+
+    TestCASESecurePairingDelegate caseDelegate;
+    CASESession caseSession;
+    caseSession.SetGroupDataProvider(&gDeviceGroupDataProvider);
+    EXPECT_EQ(caseSession.PrepareForSessionEstablishment(sessionManager, &gDeviceFabrics, nullptr, nullptr, &caseDelegate,
+                                                         ScopedNodeId(), NullOptional),
+              CHIP_NO_ERROR);
+
+    EXPECT_EQ(GetExchangeManager().RegisterUnsolicitedMessageHandlerForType(MsgType::CASE_Sigma1, &caseSession), CHIP_NO_ERROR);
+
+    ExpectErrorExchangeDelegate delegate(SecureChannel::kProtocolCodeNoSharedRoot);
+    ExchangeContext * exchange = GetExchangeManager().NewContext(session.Value(), &delegate);
+    ASSERT_NE(exchange, nullptr);
+
+    EXPECT_SUCCESS(exchange->SendMessage(MsgType::CASE_Sigma1, std::move(data), SendMessageFlags::kExpectResponse));
+
+    ServiceEvents();
+
+    EXPECT_EQ(caseDelegate.mNumPairingErrors, 1u);
+    EXPECT_EQ(caseDelegate.mNumPairingComplete, 0u);
+
+    EXPECT_SUCCESS(GetExchangeManager().UnregisterUnsolicitedMessageHandlerForType(MsgType::CASE_Sigma1));
+    caseSession.Clear();
+}
+
+TEST_F(TestCASESession, RejectedSigma1WithLargeMRPIntervalsUsesDefaultConfig)
+{
+    using SecureChannel::MsgType;
+
+    SessionManager & sessionManager = GetSecureSessionManager();
+
     uint8_t initiatorRandom[Crypto::kSHA256_Hash_Length] = { 1 };
     uint8_t destinationId[Crypto::kSHA256_Hash_Length]   = { 2 };
     Crypto::P256Keypair ephemeralKey;
